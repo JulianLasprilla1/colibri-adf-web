@@ -1,381 +1,410 @@
-'use client'
+"use client";
 
-import { useEffect, useState } from 'react'
-import { supabase } from '@/lib/supabase'
-import Navbar from '@/components/Navbar'
-import { Button } from '@/components/ui/button'
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import ExcelJS from 'exceljs'
-import { saveAs } from 'file-saver'
-import { useForm } from 'react-hook-form'
-import { z } from 'zod'
-import { zodResolver } from '@hookform/resolvers/zod'
-import { toast } from 'sonner'
-import { DateRangePicker } from '@/components/ui/date-range-picker'
+import { useState, useEffect } from "react";
+import { useOrders } from "@/hooks/useOrders";
+import { ordersService } from "@/services/ordersService";
+import Navbar from "@/components/Navbar";
+import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogTitle, DialogActions } from "@mui/material";
+import { DateRangePicker } from "@/components/ui/date-range-picker";
+import ExcelJS from "exceljs";
+import { saveAs } from "file-saver";
+import { useForm, Controller, Resolver } from "react-hook-form";
+import { z } from "zod";
+import { zodResolver } from "@hookform/resolvers/zod";
+import { toast } from "sonner";
+import { TextField, MenuItem } from "@mui/material";
+import { supabase } from "@/lib/supabase";
+import { useRouter } from "next/navigation";
 
-type Orden = {
-  id?: string
-  cliente: string
-  producto: string
-  cantidad: number
-  precio: number
-  estado: string
-  created_at?: string
-}
-
+// Actualiza el esquema para incluir el ID del item
 const schema = z.object({
-  cliente: z.string().min(2, 'El cliente debe tener mínimo 2 caracteres'),
-  producto: z.string().min(2, 'El producto debe tener mínimo 2 caracteres'),
-  cantidad: z.number().min(1, 'La cantidad debe ser mayor a 0'),
-  precio: z.number().min(0, 'El precio no puede ser negativo'),
-  estado: z.enum(['nueva orden', 'por alistar']),
-})
+  canal_id: z.string().min(1, "Debes seleccionar un canal"),
+  codigo_orden: z.string().min(2, "El código de orden es obligatorio"),
+  cliente: z.object({
+    nombre: z.string().min(2, "El nombre es obligatorio"),
+    documento: z.string().optional(),
+    ciudad: z.string().optional(),
+    departamento: z.string().optional(),
+    correo: z.string().email("El correo debe ser válido").optional(),
+    celular: z.string().regex(/^\d+$/, "El celular debe contener solo números").optional(),
+  }),
+  estado: z.string().min(1, "El estado es obligatorio"),
+  item_id: z.string().optional(), // Añadir campo para ID del item
+  sku: z.string().min(1, "El SKU es obligatorio"),
+  producto: z.string().min(2, "El producto es obligatorio"),
+  cantidad: z.coerce.number().min(1, "La cantidad debe ser mayor a 0"),
+  precio: z.coerce.number().min(0, "El precio no puede ser negativo"),
+  flete: z.coerce.number().min(0, "El flete no puede ser negativo"),
+});
 
-type FormValues = z.infer<typeof schema>
-const ITEMS_POR_PAGINA = 5
+// Actualiza el tipo FormValues
+type FormValues = z.infer<typeof schema>;
+
+type Canal = {
+  id: string;
+  nombre: string;
+};
 
 export default function OrdenesPage() {
-  const [ordenes, setOrdenes] = useState<Orden[]>([])
-  const [loading, setLoading] = useState(true)
-  const [procesando, setProcesando] = useState(false)
-  const [userEmail, setUserEmail] = useState<string | null>(null)
-
-  const [fechaInicio, setFechaInicio] = useState('')
-  const [fechaFin, setFechaFin] = useState('')
-  const [busqueda, setBusqueda] = useState('')
-  const [pagina, setPagina] = useState(1)
-  const [estadoFiltro, setEstadoFiltro] = useState<string | null>(null)
-
-  const [abrirDialogo, setAbrirDialogo] = useState(false)
-  const [ordenEditando, setOrdenEditando] = useState<Orden | null>(null)
-
-  const estadosResumen = ['nueva orden', 'por alistar', 'por empacar', 'por facturar']
-
-  // 🔹 Configurar rango de hoy al iniciar
-  useEffect(() => {
-    const hoy = new Date().toISOString().split('T')[0]
-    setFechaInicio(hoy)
-    setFechaFin(hoy)
-  }, [])
-
-  const fetchOrdenes = async () => {
-    const { data } = await supabase
-      .from('ordenes')
-      .select('*')
-      .order('created_at', { ascending: false })
-    if (data) setOrdenes(data)
-  }
-
-  useEffect(() => {
-    const init = async () => {
-      const { data: sessionData } = await supabase.auth.getSession()
-      if (!sessionData.session) return
-      setUserEmail(sessionData.session.user.email ?? null)
-
-      await fetchOrdenes()
-      setLoading(false)
-
-      const channel = supabase
-        .channel('ordenes-changes')
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'ordenes' }, fetchOrdenes)
-        .subscribe()
-
-      return () => supabase.removeChannel(channel)
-    }
-    init()
-  }, [])
-
-  const eliminarOrden = async (id?: string) => {
-    if (!id) return
-    if (!confirm('¿Eliminar esta orden?')) return
-
-    setProcesando(true)
-    const { error } = await supabase.from('ordenes').delete().eq('id', id)
-    setProcesando(false)
-
-    if (error) toast.error('Error al eliminar la orden')
-    else toast.success('Orden eliminada correctamente')
-
-    await fetchOrdenes()
-  }
-
-  const abrirModalNueva = () => {
-    setOrdenEditando(null)
-    setAbrirDialogo(true)
-    reset({
-      cliente: '',
-      producto: '',
+  const [refreshKey, setRefreshKey] = useState(0);
+  
+  // Usa el hook con el refreshKey
+  const { ordenesAgrupadas, loading, error, fetchOrdenes } = useOrders(refreshKey);
+  const [canales, setCanales] = useState<Canal[]>([]);
+  const [abrirDialogo, setAbrirDialogo] = useState(false);
+  const [ordenEditando, setOrdenEditando] = useState<any | null>(null);
+  const [guardando, setGuardando] = useState(false);
+  const [userEmail, setUserEmail] = useState<string | null>(null);
+  const router = useRouter();
+  
+  // 1. Mejora los valores por defecto para asegurar que nunca sean undefined
+  const { register, handleSubmit, formState: { errors }, reset, control, setValue } = useForm<FormValues>({
+    resolver: zodResolver(schema) as Resolver<FormValues>,
+    defaultValues: {
+      canal_id: "",
+      codigo_orden: "",
+      cliente: {
+        nombre: "",
+        documento: "",
+        ciudad: "",
+        departamento: "",
+        correo: "",
+        celular: "",
+      },
+      estado: "nueva orden",
+      sku: "",
+      producto: "",
       cantidad: 1,
       precio: 0,
-      estado: 'nueva orden',
-    })
-  }
+      flete: 0,
+    },
+  });
 
-  const abrirModalEdicion = (orden: Orden) => {
-    setOrdenEditando(orden)
-    setAbrirDialogo(true)
+  // Función mejorada para manejar Nueva Orden
+  const nuevaOrden = () => {
+    setOrdenEditando(null);
     reset({
-      cliente: orden.cliente,
-      producto: orden.producto,
-      cantidad: orden.cantidad,
-      precio: orden.precio,
-      estado: orden.estado as 'nueva orden' | 'por alistar',
-    })
-  }
+      canal_id: "",
+      codigo_orden: "",
+      cliente: {
+        nombre: "",
+        documento: "",
+        ciudad: "",
+        departamento: "",
+        correo: "",
+        celular: "",
+      },
+      estado: "nueva orden",
+      sku: "",
+      producto: "",
+      cantidad: 1,
+      precio: 0,
+      flete: 0,
+    });
+    setAbrirDialogo(true);
+  };
 
-  const {
-    register,
-    handleSubmit,
-    reset,
-    formState: { errors },
-  } = useForm<FormValues>({
-    resolver: zodResolver(schema),
-    defaultValues: { cliente: '', producto: '', cantidad: 1, precio: 0, estado: 'nueva orden' },
-  })
+  useEffect(() => {
+    const fetchCanales = async () => {
+      try {
+        // Si prefieres llamar directamente a supabase:
+        const { data, error } = await supabase.from("canales_venta").select("*");
+        if (!error && data) {
+          setCanales(data);
+        } else if (error) {
+          throw error;
+        }
+        
+        // O si usas el servicio:
+        // const data = await ordersService.getCanales();
+        // setCanales(data);
+      } catch (error) {
+        console.error("Error al cargar canales:", error);
+        toast.error("Error al cargar canales");
+      }
+    };
 
+    fetchCanales();
+  }, []);
+
+  useEffect(() => {
+    async function getUserEmail() {
+      const { data } = await supabase.auth.getUser();
+      // Usa el operador ?? para convertir undefined a null
+      setUserEmail(data?.user?.email ?? null);
+    }
+    getUserEmail();
+  }, []);
+
+  // Elimina la redefinición de fetchOrdenes y usa esta función auxiliar en su lugar
+  const triggerRefresh = async () => {
+    // Incrementa el refreshKey para forzar actualización
+    setRefreshKey(prev => prev + 1);
+  };
+
+  // 4. Modificar la función de editar orden para evitar valores undefined
+  const editarOrden = async (orden: any) => {
+    setOrdenEditando(orden);
+    
+    // Si hay varios items, solo usaremos el primero
+    const item = orden.items[0] || {};
+    
+    // Reset form
+    reset();
+    
+    // Set values with ID of the item to update
+    setValue("canal_id", orden.canal_id || "");
+    setValue("codigo_orden", orden.codigo_orden || "");
+    setValue("estado", orden.estado || "nueva orden");
+    setValue("cliente.nombre", orden.cliente_nombre || "");
+    setValue("cliente.documento", orden.cliente_documento || "");
+    setValue("cliente.ciudad", orden.cliente_ciudad || "");
+    setValue("cliente.departamento", orden.cliente_departamento || "");
+    setValue("cliente.correo", orden.cliente_correo || "");
+    setValue("cliente.celular", orden.cliente_celular || "");
+    
+    // Importante: guarda también el ID del item
+    setValue("item_id", item.id || "");
+    setValue("sku", item.sku || "");
+    setValue("producto", item.producto || "");
+    setValue("cantidad", Number(item.cantidad) || 1);
+    setValue("precio", Number(item.precio) || 0);
+    setValue("flete", Number(item.flete) || 0);
+    
+    setAbrirDialogo(true);
+  };
+
+  // Modifica la función guardarOrden para garantizar actualizaciones correctas
   const guardarOrden = async (data: FormValues) => {
-    setProcesando(true)
+    if (!window.confirm("¿Estás seguro de guardar los cambios?")) return;
+    
+    setGuardando(true);
+    
+    try {
+      if (ordenEditando?.id) {
+        console.log("Actualizando orden ID:", ordenEditando.id);
+        
+        // Simplificado: solo pasamos los datos necesarios
+        const payload = {
+          p_canal_id: data.canal_id,
+          p_cliente: {
+            nombre: data.cliente.nombre || "",
+            documento: data.cliente.documento || "",
+            ciudad: data.cliente.ciudad || "",
+            departamento: data.cliente.departamento || "",
+            correo: data.cliente.correo || "",
+            celular: data.cliente.celular || ""
+          },
+          p_codigo_orden: data.codigo_orden || "",
+          p_estado: data.estado || "nueva orden",
+          p_items: [
+            {
+              sku: data.sku || "",
+              producto: data.producto || "",
+              cantidad: Number(data.cantidad) || 1,
+              precio: Number(data.precio) || 0,
+              flete: Number(data.flete) || 0
+            }
+          ],
+          p_orden_id: ordenEditando.id
+        };
+        
+        console.log("Actualizando con payload:", JSON.stringify(payload));
+        
+        const result = await ordersService.actualizarOrdenCompleta(payload);
+        
+        if (result?.error) {
+          toast.error(`Error: ${result.error}`);
+        } else {
+          toast.success("Orden actualizada correctamente");
+          
+          // Forzar actualización de la lista
+          setTimeout(async () => {
+            await fetchOrdenes();
+            setAbrirDialogo(false);
+            reset();
+            setOrdenEditando(null);
+          }, 500);
+        }
+      } else {
+        // Código para crear nueva orden...
+        const itemsArray = [
+          {
+            sku: data.sku || "",
+            producto: data.producto || "",
+            cantidad: Number(data.cantidad) || 1,
+            precio: Number(data.precio) || 0,
+            flete: Number(data.flete) || 0
+          }
+        ];
 
-    if (ordenEditando?.id) {
-      const { error } = await supabase
-        .from('ordenes')
-        .update({ ...data, estado: data.estado })
-        .eq('id', ordenEditando.id)
-      if (error) toast.error('Error al actualizar la orden')
-      else toast.success('Orden actualizada correctamente')
-    } else {
-      const { error } = await supabase.from('ordenes').insert([{ ...data, estado: 'nueva orden' }])
-      if (error) toast.error('Error al crear la orden')
-      else toast.success('Orden creada correctamente')
+        const payload = {
+          canal_id: data.canal_id,
+          codigo_orden: data.codigo_orden || "",
+          cliente: data.cliente,
+          items: itemsArray
+        };
+
+        console.log("Creando orden:", JSON.stringify(payload));
+        
+        // Asegúrate también de guardar el resultado aquí
+        const result = await ordersService.crearOrdenCompleta(payload);
+        
+        if (result?.error) {
+          toast.error(`Error: ${result.error}`);
+        } else {
+          toast.success("Orden creada correctamente");
+          await fetchOrdenes();
+          setAbrirDialogo(false);
+          reset();
+        }
+      }
+    } catch (err: any) {
+      console.error("Error en actualización:", err);
+      toast.error(`Error: ${err.message || "Error desconocido"}`);
+    } finally {
+      setGuardando(false);
     }
+  };
 
-    setProcesando(false)
-    setAbrirDialogo(false)
-    await fetchOrdenes()
-  }
+  const eliminarOrden = async (id: string) => {
+    if (!window.confirm("¿Estás seguro de eliminar esta orden?")) return;
 
-  const descargarPlantilla = async () => {
-    setProcesando(true)
-    const workbook = new ExcelJS.Workbook()
-    const sheet = workbook.addWorksheet('Plantilla')
-    sheet.addRow(['Cliente', 'Producto', 'Cantidad', 'Precio'])
-    const buffer = await workbook.xlsx.writeBuffer()
-    saveAs(new Blob([buffer]), 'plantilla_ordenes.xlsx')
-    setProcesando(false)
-    toast.info('Plantilla descargada')
-  }
-
-  const cargarExcel = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (!file) return
-
-    setProcesando(true)
-    const buffer = await file.arrayBuffer()
-    const workbook = new ExcelJS.Workbook()
-    await workbook.xlsx.load(buffer)
-    const sheet = workbook.worksheets[0]
-
-    const header = sheet.getRow(1).values as string[]
-    const required = ['Cliente', 'Producto', 'Cantidad', 'Precio']
-    if (required.some((col) => !header.includes(col))) {
-      setProcesando(false)
-      toast.warning('El archivo no tiene las columnas correctas')
-      return
+    try {
+      const result = await ordersService.eliminarOrden(id);
+      if (result?.error) {
+        toast.error(`Error: ${result.error}`);
+      } else {
+        toast.success("Orden eliminada correctamente");
+        fetchOrdenes();
+      }
+    } catch (err: any) {
+      toast.error(`Error inesperado: ${err?.message || "Error desconocido"}`);
     }
+  };
 
-    const rows: Orden[] = []
-    sheet.eachRow((row, i) => {
-      if (i === 1) return
-      const [_, cliente, producto, cantidad, precio] = row.values as any[]
-      rows.push({
-        cliente,
-        producto,
-        cantidad: Number(cantidad),
-        precio: Number(precio),
-        estado: 'nueva orden',
-      })
-    })
+  const exportarExcel = async () => {
+    const workbook = new ExcelJS.Workbook();
+    const worksheet = workbook.addWorksheet("Órdenes");
 
-    const { error } = await supabase.from('ordenes').insert(rows)
-    setProcesando(false)
+    worksheet.columns = [
+      { header: "Código", key: "codigo", width: 15 },
+      { header: "Cliente", key: "cliente", width: 30 },
+      { header: "Producto", key: "producto", width: 30 },
+      { header: "Cantidad", key: "cantidad", width: 10 },
+      { header: "Precio", key: "precio", width: 15 },
+      { header: "Flete", key: "flete", width: 15 },
+      { header: "Estado", key: "estado", width: 15 },
+      { header: "Fecha", key: "fecha", width: 20 },
+    ];
 
-    if (error) toast.error('Error al cargar el archivo')
-    else toast.success('Órdenes cargadas correctamente')
+    ordenesAgrupadas.forEach(orden => {
+      orden.items.forEach(item => {
+        worksheet.addRow({
+          codigo: orden.codigo_orden,
+          cliente: orden.cliente_nombre,
+          producto: item.producto,
+          cantidad: item.cantidad,
+          precio: item.precio,
+          flete: item.flete,
+          estado: orden.estado,
+          fecha: new Date(orden.created_at).toLocaleDateString(),
+        });
+      });
+    });
 
-    await fetchOrdenes()
+    const buffer = await workbook.xlsx.writeBuffer();
+    const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    saveAs(blob, `ordenes_${new Date().toISOString().split('T')[0]}.xlsx`);
+  };
+
+  if (error) {
+    return (
+      <div className="container mx-auto p-4">
+        <Navbar email={userEmail} />
+        <div className="bg-red-100 p-4 rounded-md mt-4">
+          <p>Error al cargar las órdenes: {error}</p>
+          <Button onClick={() => fetchOrdenes()} className="mt-2">Reintentar</Button>
+        </div>
+      </div>
+    );
   }
 
-  const descargarExcel = async () => {
-    setProcesando(true)
-
-    const filtradas = ordenesFiltradas()
-    const workbook = new ExcelJS.Workbook()
-    const sheet = workbook.addWorksheet('Órdenes')
-    sheet.addRow(['Cliente', 'Producto', 'Cantidad', 'Precio', 'Estado', 'Fecha'])
-    filtradas.forEach((o) =>
-      sheet.addRow([o.cliente, o.producto, o.cantidad, o.precio, o.estado, o.created_at]),
-    )
-
-    const buffer = await workbook.xlsx.writeBuffer()
-    saveAs(new Blob([buffer]), 'ordenes.xlsx')
-
-    setProcesando(false)
-    toast.info('Órdenes exportadas')
-  }
-
-  // 🔹 Filtrado de órdenes
-  const ordenesFiltradas = () => {
-    return ordenes.filter((o) => {
-      const fecha = new Date(o.created_at!).toISOString().split('T')[0]
-      const coincideFecha =
-        (!fechaInicio || !fechaFin) || (fecha >= fechaInicio && fecha <= fechaFin)
-      const coincideEstado = !estadoFiltro || o.estado === estadoFiltro
-      const coincideBusqueda =
-        o.cliente.toLowerCase().includes(busqueda.toLowerCase()) ||
-        o.producto.toLowerCase().includes(busqueda.toLowerCase())
-
-      return coincideFecha && coincideEstado && coincideBusqueda
-    })
-  }
-
-  const limpiarFiltros = () => {
-    const hoy = new Date().toISOString().split('T')[0]
-    setFechaInicio(hoy)
-    setFechaFin(hoy)
-    setEstadoFiltro(null)
-    setBusqueda('')
-    setPagina(1)
-  }
-
-  const totalPaginas = Math.ceil(ordenesFiltradas().length / ITEMS_POR_PAGINA)
-  const inicio = (pagina - 1) * ITEMS_POR_PAGINA
-  const ordenesPaginadas = ordenesFiltradas().slice(inicio, inicio + ITEMS_POR_PAGINA)
-
-  if (loading) return <p className="text-center mt-10">Cargando...</p>
+  // Añade esta definición de función
+  const cerrarDialogo = () => {
+    setAbrirDialogo(false);
+    setTimeout(() => {
+      setOrdenEditando(null);
+      reset();
+    }, 200);
+  };
 
   return (
-    <div className="min-h-screen bg-gray-100 relative">
+    <>
       <Navbar email={userEmail} />
-
-      {procesando && (
-        <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-30 z-50">
-          <div className="w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
-        </div>
-      )}
-
-      <div className="max-w-7xl mx-auto p-6 space-y-8">
-        <div className="flex justify-between items-center">
-          <h1 className="text-3xl font-bold">Gestión de Órdenes</h1>
-          <Button onClick={abrirModalNueva} className="bg-blue-600 hover:bg-blue-700">
-            Nueva Orden
-          </Button>
-        </div>
-
-        {/* Resumen de estados */}
-        <div className="flex gap-4 mb-4">
-          {estadosResumen.map((estado) => (
-            <button
-              key={estado}
-              onClick={() => {
-                setEstadoFiltro(estadoFiltro === estado ? null : estado)
-                setPagina(1)
-              }}
-              className={`px-4 py-2 rounded-lg shadow flex flex-col items-center w-36 
-                ${estadoFiltro === estado ? 'bg-blue-200' : 'bg-white'}`}
-            >
-              <p className="text-sm font-medium capitalize">{estado}</p>
-              <p className="text-xl font-bold">
-                {ordenes.filter((o) => o.estado === estado).length}
-              </p>
-            </button>
-          ))}
+      
+      <div className="container mx-auto p-4">
+        <div className="flex justify-between items-center mb-4 mt-4">
+          <h1 className="text-2xl font-bold">Órdenes</h1>
+          <div className="flex gap-2">
+            <Button onClick={nuevaOrden}>
+              Nueva Orden
+            </Button>
+            <Button onClick={exportarExcel} variant="outline">
+              Exportar a Excel
+            </Button>
+          </div>
         </div>
 
-        {/* Barra de acciones */}
-        <div className="bg-white shadow rounded-lg p-4 flex flex-wrap gap-3 items-center">
-          <input
-            type="text"
-            placeholder="Buscar..."
-            value={busqueda}
-            onChange={(e) => {
-              setBusqueda(e.target.value)
-              setPagina(1)
-            }}
-            className="border rounded px-3 py-2 flex-1"
-          />
-
-          <DateRangePicker
-            onUpdate={(range) => {
-              if (range.range?.from && range.range?.to) {
-                setFechaInicio(range.range.from.toISOString().split('T')[0])
-                setFechaFin(range.range.to.toISOString().split('T')[0])
-              }
-            }}
-            initialDate={{
-              from: new Date(fechaInicio),
-              to: new Date(fechaFin),
-            }}
-          />
-
-          <Button variant="secondary" onClick={descargarPlantilla}>
-            Plantilla
-          </Button>
-
-          <label className="cursor-pointer border rounded px-3 py-2 bg-gray-50 hover:bg-gray-100">
-            Subir Excel
-            <input type="file" accept=".xlsx" onChange={cargarExcel} className="hidden" />
-          </label>
-
-          <Button onClick={descargarExcel}>Descargar</Button>
-
-          <Button variant="outline" onClick={limpiarFiltros}>
-            Limpiar filtros
-          </Button>
-        </div>
-
-        {/* Tabla */}
-        <div className="bg-white shadow rounded-lg overflow-hidden">
-          {ordenesPaginadas.length === 0 ? (
-            <p className="p-6 text-gray-500">No hay órdenes.</p>
-          ) : (
-            <table className="min-w-full border-collapse">
-              <thead>
-                <tr className="bg-gray-200 text-left">
-                  <th className="px-4 py-3">Cliente</th>
-                  <th className="px-4 py-3">Producto</th>
-                  <th className="px-4 py-3">Cantidad</th>
-                  <th className="px-4 py-3">Precio</th>
-                  <th className="px-4 py-3">Estado</th>
-                  <th className="px-4 py-3">Acciones</th>
+        {loading ? (
+          <div className="flex justify-center items-center h-64">
+            <p>Cargando órdenes...</p>
+          </div>
+        ) : ordenesAgrupadas.length === 0 ? (
+          <div className="text-center p-8 bg-gray-50 rounded-md">
+            <p>No hay órdenes disponibles.</p>
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="min-w-full bg-white rounded-md overflow-hidden shadow-sm">
+              <thead className="bg-gray-100">
+                <tr>
+                  <th className="py-2 px-4 text-left">Código</th>
+                  <th className="py-2 px-4 text-left">Cliente</th>
+                  <th className="py-2 px-4 text-left">Productos</th>
+                  <th className="py-2 px-4 text-left">Estado</th>
+                  <th className="py-2 px-4 text-left">Fecha</th>
+                  <th className="py-2 px-4 text-center">Acciones</th>
                 </tr>
               </thead>
               <tbody>
-                {ordenesPaginadas.map((orden) => (
-                  <tr key={orden.id} className="hover:bg-gray-50">
-                    <td className="px-4 py-3">{orden.cliente}</td>
-                    <td className="px-4 py-3">{orden.producto}</td>
-                    <td className="px-4 py-3">{orden.cantidad}</td>
-                    <td className="px-4 py-3">${orden.precio}</td>
-                    <td className="px-4 py-3">
-                      <span
-                        className={`px-2 py-1 rounded-full text-xs font-semibold
-                          ${orden.estado === 'nueva orden' ? 'bg-gray-200 text-gray-800' : ''}
-                          ${orden.estado === 'por alistar' ? 'bg-blue-100 text-blue-800' : ''}
-                          ${orden.estado === 'por empacar' ? 'bg-yellow-100 text-yellow-800' : ''}
-                          ${orden.estado === 'por facturar' ? 'bg-green-100 text-green-800' : ''}`}
-                      >
+                {ordenesAgrupadas.map((orden) => (
+                  <tr key={orden.id} className="border-t hover:bg-gray-50">
+                    <td className="py-2 px-4">{orden.codigo_orden}</td>
+                    <td className="py-2 px-4">{orden.cliente_nombre}</td>
+                    <td className="py-2 px-4">
+                      {orden.items.map((item, i) => (
+                        <div key={`item-${orden.id}-${i}`} className="mb-1">
+                          {item.producto} ({item.cantidad}) - ${item.precio}
+                        </div>
+                      ))}
+                    </td>
+                    <td className="py-2 px-4">
+                      <span className={`px-2 py-1 rounded-full text-xs ${
+                        orden.estado === 'completada' ? 'bg-green-100 text-green-800' : 
+                        orden.estado === 'cancelada' ? 'bg-red-100 text-red-800' : 
+                        'bg-yellow-100 text-yellow-800'
+                      }`}>
                         {orden.estado}
                       </span>
                     </td>
-                    <td className="px-4 py-3 flex gap-2">
-                      <Button variant="secondary" size="sm" onClick={() => abrirModalEdicion(orden)}>
+                    <td className="py-2 px-4">{new Date(orden.created_at).toLocaleDateString()}</td>
+                    <td className="py-2 px-4 flex justify-center gap-2">
+                      <Button variant="outline" size="sm" onClick={() => editarOrden(orden)}>
                         Editar
                       </Button>
-                      <Button
-                        variant="destructive"
-                        size="sm"
-                        onClick={() => eliminarOrden(orden.id)}
-                      >
+                      <Button variant="destructive" size="sm" onClick={() => eliminarOrden(orden.id)}>
                         Eliminar
                       </Button>
                     </td>
@@ -383,83 +412,265 @@ export default function OrdenesPage() {
                 ))}
               </tbody>
             </table>
-          )}
-        </div>
-
-        {/* Paginación */}
-        {totalPaginas > 1 && (
-          <div className="flex justify-center gap-4">
-            <Button
-              variant="outline"
-              disabled={pagina === 1}
-              onClick={() => setPagina((p) => p - 1)}
-            >
-              Anterior
-            </Button>
-            <span className="self-center">
-              Página {pagina} de {totalPaginas}
-            </span>
-            <Button
-              variant="outline"
-              disabled={pagina === totalPaginas}
-              onClick={() => setPagina((p) => p + 1)}
-            >
-              Siguiente
-            </Button>
           </div>
         )}
-      </div>
 
-      {/* Modal */}
-      <Dialog open={abrirDialogo} onOpenChange={setAbrirDialogo}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>{ordenEditando ? 'Editar Orden' : 'Nueva Orden'}</DialogTitle>
-          </DialogHeader>
-
-          <form onSubmit={handleSubmit(guardarOrden)} className="space-y-3 mt-3">
-            <div>
-              <input {...register('cliente')} className="border p-2 rounded w-full" placeholder="Cliente" />
-              {errors.cliente && <p className="text-red-500 text-sm">{errors.cliente.message}</p>}
-            </div>
-
-            <div>
-              <input {...register('producto')} className="border p-2 rounded w-full" placeholder="Producto" />
-              {errors.producto && <p className="text-red-500 text-sm">{errors.producto.message}</p>}
-            </div>
-
-            <div>
-              <input type="number" {...register('cantidad', { valueAsNumber: true })} className="border p-2 rounded w-full" placeholder="Cantidad" />
-              {errors.cantidad && <p className="text-red-500 text-sm">{errors.cantidad.message}</p>}
-            </div>
-
-            <div>
-              <input type="number" {...register('precio', { valueAsNumber: true })} className="border p-2 rounded w-full" placeholder="Precio" />
-              {errors.precio && <p className="text-red-500 text-sm">{errors.precio.message}</p>}
-            </div>
-
-            <div>
-              <select
-                {...register('estado')}
-                className="border p-2 rounded w-full"
-                disabled={ordenEditando?.estado === 'por alistar'}
-              >
-                <option value="nueva orden">Nueva Orden</option>
-                <option value="por alistar">Por Alistar</option>
-              </select>
-            </div>
-
-            <div className="flex justify-end gap-3 mt-4">
-              <Button type="button" variant="outline" onClick={() => setAbrirDialogo(false)}>
+        {/* Diálogo de Edición/Creación */}
+        <Dialog open={abrirDialogo} onClose={cerrarDialogo} maxWidth="md" fullWidth>
+          <DialogTitle>
+            {ordenEditando ? "Editar Orden" : "Nueva Orden"}
+          </DialogTitle>
+          <form onSubmit={handleSubmit(guardarOrden)}>
+            <DialogContent>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <Controller
+                  name="canal_id"
+                  control={control}
+                  render={({ field }) => (
+                    <TextField
+                      select
+                      label="Canal"
+                      variant="outlined"
+                      fullWidth
+                      error={!!errors.canal_id}
+                      helperText={errors.canal_id?.message || ""}
+                      value={field.value || ""}
+                      onChange={field.onChange}
+                    >
+                      {canales.map((canal) => (
+                        <MenuItem key={canal.id} value={canal.id}>
+                          {canal.nombre}
+                        </MenuItem>
+                      ))}
+                    </TextField>
+                  )}
+                />
+                
+                <Controller
+                  name="codigo_orden"
+                  control={control}
+                  render={({ field }) => (
+                    <TextField
+                      label="Código de Orden"
+                      variant="outlined"
+                      fullWidth
+                      error={!!errors.codigo_orden}
+                      helperText={errors.codigo_orden?.message}
+                      {...field}
+                    />
+                  )}
+                />
+                
+                <Controller
+                  name="cliente.nombre"
+                  control={control}
+                  render={({ field }) => (
+                    <TextField
+                      label="Nombre del Cliente"
+                      variant="outlined"
+                      fullWidth
+                      error={!!errors.cliente?.nombre}
+                      helperText={errors.cliente?.nombre?.message || ""}
+                      value={field.value || ""}
+                      onChange={field.onChange}
+                    />
+                  )}
+                />
+                
+                <Controller
+                  name="cliente.documento"
+                  control={control}
+                  render={({ field }) => (
+                    <TextField
+                      label="Documento"
+                      variant="outlined"
+                      fullWidth
+                      error={!!errors.cliente?.documento}
+                      helperText={errors.cliente?.documento?.message}
+                      {...field}
+                    />
+                  )}
+                />
+                
+                <Controller
+                  name="cliente.ciudad"
+                  control={control}
+                  render={({ field }) => (
+                    <TextField
+                      label="Ciudad"
+                      variant="outlined"
+                      fullWidth
+                      error={!!errors.cliente?.ciudad}
+                      helperText={errors.cliente?.ciudad?.message}
+                      {...field}
+                    />
+                  )}
+                />
+                
+                <Controller
+                  name="cliente.departamento"
+                  control={control}
+                  render={({ field }) => (
+                    <TextField
+                      label="Departamento"
+                      variant="outlined"
+                      fullWidth
+                      error={!!errors.cliente?.departamento}
+                      helperText={errors.cliente?.departamento?.message}
+                      {...field}
+                    />
+                  )}
+                />
+                
+                <Controller
+                  name="cliente.correo"
+                  control={control}
+                  render={({ field }) => (
+                    <TextField
+                      label="Correo Electrónico"
+                      variant="outlined"
+                      fullWidth
+                      error={!!errors.cliente?.correo}
+                      helperText={errors.cliente?.correo?.message}
+                      {...field}
+                    />
+                  )}
+                />
+                
+                <Controller
+                  name="cliente.celular"
+                  control={control}
+                  render={({ field }) => (
+                    <TextField
+                      label="Celular"
+                      variant="outlined"
+                      fullWidth
+                      error={!!errors.cliente?.celular}
+                      helperText={errors.cliente?.celular?.message}
+                      {...field}
+                    />
+                  )}
+                />
+                
+                <Controller
+                  name="estado"
+                  control={control}
+                  render={({ field }) => (
+                    <TextField
+                      select
+                      label="Estado"
+                      variant="outlined"
+                      fullWidth
+                      error={!!errors.estado}
+                      helperText={errors.estado?.message}
+                      {...field}
+                    >
+                      <MenuItem value="nueva orden">Nueva Orden</MenuItem>
+                      <MenuItem value="en proceso">En Proceso</MenuItem>
+                      <MenuItem value="completada">Completada</MenuItem>
+                      <MenuItem value="cancelada">Cancelada</MenuItem>
+                    </TextField>
+                  )}
+                />
+                
+                <div className="md:col-span-2">
+                  <h3 className="font-medium text-lg mb-2">Producto</h3>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <Controller
+                      name="sku"
+                      control={control}
+                      render={({ field }) => (
+                        <TextField
+                          label="SKU"
+                          variant="outlined"
+                          fullWidth
+                          error={!!errors.sku}
+                          helperText={errors.sku?.message}
+                          {...field}
+                        />
+                      )}
+                    />
+                    
+                    <Controller
+                      name="producto"
+                      control={control}
+                      render={({ field }) => (
+                        <TextField
+                          label="Producto"
+                          variant="outlined"
+                          fullWidth
+                          error={!!errors.producto}
+                          helperText={errors.producto?.message}
+                          {...field}
+                        />
+                      )}
+                    />
+                    
+                    <Controller
+                      name="cantidad"
+                      control={control}
+                      render={({ field }) => (
+                        <TextField
+                          label="Cantidad"
+                          variant="outlined"
+                          type="number"
+                          fullWidth
+                          error={!!errors.cantidad}
+                          helperText={errors.cantidad?.message}
+                          {...field}
+                        />
+                      )}
+                    />
+                    
+                    <Controller
+                      name="precio"
+                      control={control}
+                      render={({ field }) => (
+                        <TextField
+                          label="Precio"
+                          variant="outlined"
+                          type="number"
+                          fullWidth
+                          error={!!errors.precio}
+                          helperText={errors.precio?.message}
+                          {...field}
+                        />
+                      )}
+                    />
+                    
+                    <Controller
+                      name="flete"
+                      control={control}
+                      render={({ field }) => (
+                        <TextField
+                          label="Flete"
+                          variant="outlined"
+                          type="number"
+                          fullWidth
+                          error={!!errors.flete}
+                          helperText={errors.flete?.message}
+                          {...field}
+                        />
+                      )}
+                    />
+                  </div>
+                </div>
+              </div>
+            </DialogContent>
+            <DialogActions>
+              <Button variant="outline" onClick={cerrarDialogo} disabled={guardando}>
                 Cancelar
               </Button>
-              <Button type="submit" className="bg-blue-600 hover:bg-blue-700">
-                Guardar
+              <Button type="submit" disabled={guardando}>
+                {guardando ? "Guardando..." : "Guardar"}
               </Button>
-            </div>
+            </DialogActions>
           </form>
-        </DialogContent>
-      </Dialog>
-    </div>
-  )
+        </Dialog>
+      </div>
+    </>
+  );
 }
+
+
+

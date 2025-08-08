@@ -27,7 +27,10 @@ export default function RootLayout({
         )}
       >
         <Providers>
-          {children}
+          {/* El div con pt-16 crea un espacio para el Navbar fijo */}
+          <div className="min-h-screen bg-gray-50 pt-16">
+            {children}
+          </div>
           {/* ✅ Toaster configurado */}
           <Toaster
             position="bottom-right" // Esquina inferior derecha

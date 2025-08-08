@@ -1,106 +1,230 @@
-'use client'
+"use client";
 
-import { useForm, SubmitHandler } from 'react-hook-form'
-import { z } from 'zod'
-import { zodResolver } from '@hookform/resolvers/zod'
-import { supabase } from '@/lib/supabase'
-import { useState } from 'react'
-import { useRouter } from 'next/navigation'
-import { Input } from '@/components/ui/input'
-import { Button } from '@/components/ui/button'
-import { Label } from '@/components/ui/label'
-import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card'
+import { useState, useEffect } from "react";
+import { useForm, Resolver } from "react-hook-form";
+import { z } from "zod";
+import { zodResolver } from "@hookform/resolvers/zod";
+import { toast } from "sonner";
+import { ordersService } from "@/services/ordersService";
+import { useRouter } from "next/navigation";
+import { Button } from "@/components/ui/button";
 
-// ✅ Definimos primero el esquema
 const schema = z.object({
-  cliente: z.string().min(1, 'El nombre del cliente es obligatorio'),
-  producto: z.string().min(1, 'El producto es obligatorio'),
-  cantidad: z.coerce.number().min(1, 'Debe ser al menos 1'),
-  precio: z.coerce.number().min(0, 'El precio debe ser mayor o igual a 0'),
-})
+  canal_id: z.string().min(1, "Debes seleccionar un canal"),
+  codigo_orden: z.string().min(2, "El código de orden es obligatorio"),
+  cliente: z.object({
+    nombre: z.string().min(2, "El nombre es obligatorio"),
+    documento: z.string().optional(),
+    ciudad: z.string().optional(),
+    departamento: z.string().optional(),
+    correo: z.string().email("El correo debe ser válido").optional(),
+    celular: z.string().regex(/^\d+$/, "El celular debe contener solo números").optional(),
+  }),
+  estado: z.string().min(1, "El estado es obligatorio"),
+  sku: z.string().min(1, "El SKU es obligatorio"),
+  producto: z.string().min(2, "El producto es obligatorio"),
+  cantidad: z.coerce.number().min(1, "La cantidad debe ser mayor a 0"),
+  precio: z.coerce.number().min(0, "El precio no puede ser negativo"),
+  flete: z.coerce.number().min(0, "El flete no puede ser negativo"),
+});
 
-// ✅ Luego extraemos el tipo directamente del esquema
-type FormValues = z.infer<typeof schema>
+type FormValues = z.infer<typeof schema>;
 
 export default function NuevaOrdenPage() {
-  // ✅ Aquí usamos el tipo FormValues en useForm
-  const {
-    register,
-    handleSubmit,
-    formState: { errors },
-  } = useForm<FormValues>({
-    resolver: zodResolver(schema) as any, // 👈 este cast evita el error de incompatibilidad
-  })
+  const router = useRouter();
+  const [guardando, setGuardando] = useState(false);
+  const [canales, setCanales] = useState<{ id: string; nombre: string }[]>([]);
 
-  const router = useRouter()
-  const [loading, setLoading] = useState(false)
-  const [msg, setMsg] = useState('')
+  useEffect(() => {
+    const cargarCanales = async () => {
+      try {
+        const canalesResult = await ordersService.getCanales();
+        if (!Array.isArray(canalesResult)) {
+          toast.error("Error cargando canales");
+        } else {
+          setCanales(canalesResult);
+        }
+      } catch (err) {
+        console.error("Error inesperado al cargar canales:", err);
+        toast.error("Error inesperado al cargar canales");
+      }
+    };
 
-  // ✅ Tipamos explícitamente onSubmit
-  const onSubmit: SubmitHandler<FormValues> = async (data) => {
-    setLoading(true)
-    setMsg('')
+    cargarCanales();
+  }, []);
 
-    const { error } = await supabase.from('ordenes').insert({
-      cliente: data.cliente,
-      producto: data.producto,
-      cantidad: data.cantidad,
-      precio: data.precio,
-    })
+  const { register, handleSubmit, formState: { errors } } = useForm({
+    resolver: zodResolver(schema) as Resolver<any>,
+    defaultValues: {
+      canal_id: "",
+      codigo_orden: "",
+      cliente: { nombre: "" },
+      estado: "nueva orden",
+      sku: "",
+      producto: "",
+      cantidad: 1,
+      precio: 0,
+      flete: 0,
+    },
+  });
 
-    if (error) {
-      setMsg('Error al guardar la orden: ' + error.message)
-    } else {
-      setMsg('✅ Orden registrada con éxito')
-      setTimeout(() => router.push('/dashboard'), 1500)
+  const onSubmit = async (data: FormValues) => {
+    setGuardando(true);
+
+    try {
+      // Crear array de items correctamente
+      const itemsArray = [
+        {
+          sku: data.sku || "",
+          producto: data.producto || "",
+          cantidad: data.cantidad || 1,
+          precio: data.precio || 0,
+          flete: data.flete || 0
+        }
+      ];
+
+      const payload = {
+        canal_id: data.canal_id,
+        codigo_orden: data.codigo_orden,
+        cliente: data.cliente,
+        items: itemsArray
+      };
+
+      console.log("Enviando datos:", payload);
+      const result = await ordersService.crearOrdenCompleta(payload);
+
+      if (result?.error) {
+        throw new Error(result.error);
+      }
+
+      toast.success("Orden creada exitosamente");
+      router.push("/ordenes");
+    } catch (err) {
+      console.error("Error al crear la orden:", err);
+      toast.error(`Error: ${err instanceof Error ? err.message : "Error desconocido"}`);
+    } finally {
+      setGuardando(false);
     }
-
-    setLoading(false)
-  }
+  };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50 px-4">
-      <Card className="w-full max-w-md">
-        <CardHeader>
-          <CardTitle className="text-center text-xl">Registrar Nueva Orden</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
-            <div>
-              <Label htmlFor="cliente">Cliente</Label>
-              <Input id="cliente" {...register('cliente')} />
-              {errors.cliente && (
-                <p className="text-sm text-red-500">{errors.cliente.message}</p>
-              )}
-            </div>
-            <div>
-              <Label htmlFor="producto">Producto</Label>
-              <Input id="producto" {...register('producto')} />
-              {errors.producto && (
-                <p className="text-sm text-red-500">{errors.producto.message}</p>
-              )}
-            </div>
-            <div>
-              <Label htmlFor="cantidad">Cantidad</Label>
-              <Input id="cantidad" type="number" {...register('cantidad')} />
-              {errors.cantidad && (
-                <p className="text-sm text-red-500">{errors.cantidad.message}</p>
-              )}
-            </div>
-            <div>
-              <Label htmlFor="precio">Precio Unitario</Label>
-              <Input id="precio" type="number" step="0.01" {...register('precio')} />
-              {errors.precio && (
-                <p className="text-sm text-red-500">{errors.precio.message}</p>
-              )}
-            </div>
-            {msg && <p className="text-center text-sm">{msg}</p>}
-            <Button type="submit" className="w-full" disabled={loading}>
-              {loading ? 'Guardando...' : 'Guardar Orden'}
-            </Button>
-          </form>
-        </CardContent>
-      </Card>
+    <div className="max-w-2xl mx-auto p-6 bg-white shadow rounded-lg">
+      <h1 className="text-2xl font-bold mb-4">Crear Nueva Orden</h1>
+
+      <form onSubmit={handleSubmit(onSubmit)}>
+        <div>
+          <label htmlFor="codigo_orden" className="block mb-1 font-medium">Código de Orden</label>
+          <input
+            id="codigo_orden"
+            {...register("codigo_orden")}
+            className="border rounded p-2 w-full"
+            placeholder="Ej: ADDI-12345"
+          />
+          {errors.codigo_orden?.message && (
+            <p className="text-red-500 text-sm">{String(errors.codigo_orden.message)}</p>
+          )}
+        </div>
+
+        <div>
+          <label className="block mb-1 font-medium">Canal de Venta</label>
+          <select {...register("canal_id")} className="border p-2 rounded w-full">
+            <option value="">Selecciona Canal</option>
+            {canales.length > 0 ? (
+              canales.map((c) => (
+                <option key={c.id} value={c.id}>{c.nombre}</option>
+              ))
+            ) : (
+              <option value="" disabled>No hay canales disponibles</option>
+            )}
+          </select>
+          {errors.canal_id?.message && (
+            <p className="text-red-500 text-sm">{String(errors.canal_id.message)}</p>
+          )}
+        </div>
+
+        <div>
+          <label htmlFor="sku" className="block mb-1 font-medium">SKU</label>
+          <input
+            id="sku"
+            {...register("sku")}
+            className="border rounded p-2 w-full"
+          />
+          {errors.sku?.message && (
+            <p className="text-red-500 text-sm">{String(errors.sku.message)}</p>
+          )}
+        </div>
+
+        <div>
+          <label htmlFor="producto" className="block mb-1 font-medium">Producto</label>
+          <input
+            id="producto"
+            {...register("producto")}
+            className="border rounded p-2 w-full"
+          />
+          {errors.producto?.message && (
+            <p className="text-red-500 text-sm">{String(errors.producto.message)}</p>
+          )}
+        </div>
+
+        <div>
+          <label htmlFor="cantidad" className="block mb-1 font-medium">Cantidad</label>
+          <input
+            id="cantidad"
+            type="number"
+            {...register("cantidad")}
+            className="border rounded p-2 w-full"
+          />
+          {errors.cantidad?.message && (
+            <p className="text-red-500 text-sm">{String(errors.cantidad.message)}</p>
+          )}
+        </div>
+
+        <div>
+          <label htmlFor="precio" className="block mb-1 font-medium">Precio</label>
+          <input
+            id="precio"
+            type="number"
+            {...register("precio")}
+            className="border rounded p-2 w-full"
+          />
+          {errors.precio?.message && (
+            <p className="text-red-500 text-sm">{String(errors.precio.message)}</p>
+          )}
+        </div>
+
+        <div>
+          <label htmlFor="flete" className="block mb-1 font-medium">Flete</label>
+          <input
+            id="flete"
+            type="number"
+            {...register("flete")}
+            className="border rounded p-2 w-full"
+          />
+          {errors.flete?.message && (
+            <p className="text-red-500 text-sm">{String(errors.flete.message)}</p>
+          )}
+        </div>
+
+        <h2 className="text-lg font-semibold mt-4">Datos del Cliente</h2>
+        <div>
+          <label htmlFor="cliente.nombre" className="block mb-1 font-medium">Nombre Cliente</label>
+          <input
+            id="cliente.nombre"
+            {...register("cliente.nombre")}
+            className="border rounded p-2 w-full"
+          />
+          {errors.cliente && (errors.cliente as any).nombre?.message && (
+            <p className="text-red-500 text-sm">{String((errors.cliente as any).nombre.message)}</p>
+          )}
+        </div>
+
+        <div className="flex justify-end gap-3 mt-4">
+          <Button type="button" variant="outline" onClick={() => window.history.back()}>Cancelar</Button>
+          <Button type="submit" className="bg-blue-600 hover:bg-blue-700" disabled={guardando}>
+            {guardando ? "Guardando..." : "Crear Orden"}
+          </Button>
+        </div>
+      </form>
     </div>
-  )
+  );
 }
