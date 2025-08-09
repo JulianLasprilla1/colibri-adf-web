@@ -5,6 +5,7 @@ export interface ServiceResponse {
   error?: string | null;
   success?: boolean;
   data?: any;
+  message?: string;
 }
 
 class OrdersService {
@@ -53,7 +54,7 @@ class OrdersService {
     }
   }
 
-  // ✅ Crear una orden completa usando el procedimiento almacenado
+  // ✅ Crear una orden completa usando la RPC (con logging detallado)
   async crearOrdenCompleta(data: {
     canal_id: string;
     codigo_orden: string;
@@ -68,68 +69,21 @@ class OrdersService {
     items: any[];
   }): Promise<ServiceResponse> {
     try {
-      // Crear orden principal
-      const { data: orden, error: errorOrden } = await supabase
-        .from("ordenes")
-        .insert({
-          canal_id: data.canal_id,
-          codigo_orden: data.codigo_orden,
-          estado: "nueva orden"
-        })
-        .select("id")
-        .single();
-
-      if (errorOrden) throw errorOrden;
-
-      const ordenId = orden.id;
-
-      // Crear cliente
-      const { error: errorCliente } = await supabase
-        .from("orden_clientes")
-        .insert({
-          orden_id: ordenId,
-          nombre: data.cliente.nombre,
-          documento: data.cliente.documento || "",
-          ciudad: data.cliente.ciudad || "",
-          departamento: data.cliente.departamento || "",
-          correo: data.cliente.correo || "",
-          celular: data.cliente.celular || ""
-        });
-
-      if (errorCliente) throw errorCliente;
-
-      // Crear items
-      const items = data.items.map(item => ({
-        orden_id: ordenId,
-        sku: item.sku,
-        producto: item.producto,
-        cantidad: item.cantidad,
-        precio: item.precio,
-        flete: item.flete
-      }));
-
-      const { error: errorItems } = await supabase
-        .from("orden_items")
-        .insert(items);
-
-      if (errorItems) throw errorItems;
-
-      // Registrar log
-      await supabase
-        .from("orden_logs")
-        .insert({
-          orden_id: ordenId,
-          accion: "crear",
-          fecha: new Date(),
-          usuario: "sistema"
-        });
-
-      return { success: true, data: { id: ordenId } };
+      const { data: result, error } = await supabase.rpc("crear_orden_completa", {
+        canal_id: data.canal_id,
+        codigo_orden: data.codigo_orden,
+        cliente: data.cliente,
+        items: data.items, // ← array JS; la función espera jsonb (array)
+      });
+      if (error) throw error;
+      return { success: true, data: result };
     } catch (error) {
       console.error("Error en crearOrdenCompleta:", error);
       return { error: "Error al crear la orden" };
     }
   }
+
+
 
   // ✅ Actualizar una orden completa usando el procedimiento almacenado
   async actualizarOrdenCompleta(data: {
@@ -141,32 +95,51 @@ class OrdersService {
     p_orden_id: string;
   }): Promise<ServiceResponse> {
     try {
-      console.log(`Actualizando orden ${data.p_orden_id} con estado ${data.p_estado}`);
+      console.log("Actualizando orden completa con datos:", JSON.stringify(data));
       
-      // Llamada a la función RPC - eliminar las headers incorrectas
+      if (!data.p_orden_id) {
+        return { error: "ID de orden no proporcionado" };
+      }
+      
+      // Verificar primero que la orden existe
+      const { data: ordenExiste, error: errorCheck } = await supabase
+        .from("ordenes")
+        .select("id")
+        .eq("id", data.p_orden_id)
+        .single();
+      
+      if (errorCheck || !ordenExiste) {
+        console.error("Error al verificar orden:", errorCheck);
+        return { error: "La orden no existe" };
+      }
+      
+      // Llamar a la función RPC
       const { data: result, error } = await supabase.rpc(
-        "actualizar_orden_completa", 
-        data,
-        { 
-          // Solo usar propiedades válidas
-          count: 'exact'
-        }
+        "actualizar_orden_completa",
+        data
       );
       
       if (error) {
-        console.error("Error RPC:", error);
-        return { error: error.message || "Error al actualizar" };
+        console.error("Error RPC en actualización:", error);
+        return { error: error.message };
       }
       
-      console.log("Resultado de actualización:", result);
+      console.log("Respuesta de actualización:", result);
+      
+      if (!result || !result.success) {
+        const errorMsg = result?.message || "Error desconocido al actualizar";
+        console.error("Error en resultado:", errorMsg);
+        return { error: errorMsg };
+      }
       
       return { 
-        success: true, 
-        data: result
+        success: true,
+        message: "Orden actualizada correctamente", 
+        data: result 
       };
     } catch (err: any) {
-      console.error("Error:", err);
-      return { error: err?.message || "Error interno" };
+      console.error("Error inesperado en actualización:", err);
+      return { error: err?.message || "Error inesperado" };
     }
   }
 
@@ -193,6 +166,36 @@ class OrdersService {
     }
   }
 
+  // ✅ Eliminar una orden usando la RPC y respetando el 'success' que devuelve Postgres
+  async eliminarOrden(id: string): Promise<ServiceResponse> {
+    try {
+      console.log("Eliminando orden con ID:", id);
+      if (!id) return { error: "ID de orden no proporcionado" };
+
+      const { data: result, error } = await supabase.rpc("eliminar_orden_completa", {
+        p_orden_id: id,
+      });
+
+      if (error) {
+        console.error("Error en la eliminación de orden:", error);
+        return { error: error.message || "Error en RPC eliminar_orden_completa" };
+      }
+
+      // La función devuelve jsonb: { success, message, ... }
+      const ok = (result as any)?.success === true;
+      if (!ok) {
+        const msg = (result as any)?.message || "No se pudo eliminar la orden";
+        return { error: msg, data: result };
+      }
+
+      return { success: true, message: "Orden eliminada correctamente", data: result };
+    } catch (err: any) {
+      console.error("Error inesperado al eliminar orden:", err);
+      return { error: err.message || "Error inesperado" };
+    }
+  }
+
+
   // ✅ Obtener todos los canales
   async getCanales(): Promise<any[]> {
     try {
@@ -206,6 +209,45 @@ class OrdersService {
     } catch (error) {
       console.error("Error al obtener canales:", error);
       return [];
+    }
+  }
+
+  // Eliminar un item específico sin eliminar toda la orden
+  async eliminarItem(itemId: string): Promise<ServiceResponse> {
+    try {
+      console.log("Intentando eliminar item con ID:", itemId);
+      if (!itemId) return { error: "ID de item no proporcionado" };
+
+      // Verificar existencia y obtener orden_id
+      const { data: itemData, error: fetchError } = await supabase
+        .from("orden_items")
+        .select("orden_id")
+        .eq("id", itemId)
+        .single();
+
+      if (fetchError || !itemData) {
+        console.error("Error al buscar el item:", fetchError);
+        return { error: "Item no encontrado" };
+      }
+
+      // Eliminar y obtener filas borradas
+      const { data: deleted, error } = await supabase
+        .from("orden_items")
+        .delete()
+        .eq("id", itemId)
+        .select("id"); // devuelve array con filas borradas
+
+      if (error) return { error: error.message };
+      if (!deleted || deleted.length === 0) return { error: "No se eliminó ningún item" };
+
+      return {
+        success: true,
+        message: "Item eliminado correctamente",
+        data: { orden_id: itemData.orden_id },
+      };
+    } catch (err: any) {
+      console.error("Error inesperado al eliminar item:", err);
+      return { error: err.message || "Error inesperado" };
     }
   }
 }

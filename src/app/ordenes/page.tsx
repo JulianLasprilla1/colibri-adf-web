@@ -6,7 +6,6 @@ import { ordersService } from "@/services/ordersService";
 import Navbar from "@/components/Navbar";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogTitle, DialogActions } from "@mui/material";
-import { DateRangePicker } from "@/components/ui/date-range-picker";
 import ExcelJS from "exceljs";
 import { saveAs } from "file-saver";
 import { useForm, Controller, Resolver } from "react-hook-form";
@@ -46,8 +45,18 @@ type Canal = {
   nombre: string;
 };
 
+type ItemInput = {
+  sku: string;
+  producto: string;
+  cantidad: number | string;
+  precio: number | string;
+  flete: number | string;
+};
+
+
 export default function OrdenesPage() {
   const [refreshKey, setRefreshKey] = useState(0);
+  const [extraItems, setExtraItems] = useState<ItemInput[]>([]);
   
   // Usa el hook con el refreshKey
   const { ordenesAgrupadas, loading, error, fetchOrdenes } = useOrders(refreshKey);
@@ -102,6 +111,7 @@ export default function OrdenesPage() {
       precio: 0,
       flete: 0,
     });
+    setExtraItems([]);
     setAbrirDialogo(true);
   };
 
@@ -146,14 +156,13 @@ export default function OrdenesPage() {
   // 4. Modificar la función de editar orden para evitar valores undefined
   const editarOrden = async (orden: any) => {
     setOrdenEditando(orden);
-    
-    // Si hay varios items, solo usaremos el primero
-    const item = orden.items[0] || {};
-    
-    // Reset form
+
+    // Si hay varios items, usamos el primero en los campos principales
+    const item = (orden.items && orden.items[0]) ? orden.items[0] : {};
+
     reset();
-    
-    // Set values with ID of the item to update
+
+    // Campos de la orden
     setValue("canal_id", orden.canal_id || "");
     setValue("codigo_orden", orden.codigo_orden || "");
     setValue("estado", orden.estado || "nueva orden");
@@ -163,108 +172,130 @@ export default function OrdenesPage() {
     setValue("cliente.departamento", orden.cliente_departamento || "");
     setValue("cliente.correo", orden.cliente_correo || "");
     setValue("cliente.celular", orden.cliente_celular || "");
-    
-    // Importante: guarda también el ID del item
-    setValue("item_id", item.id || "");
+
+    // Producto principal (primer ítem)
+    setValue("item_id", item.id || ""); // si lo usas en otro sitio
     setValue("sku", item.sku || "");
     setValue("producto", item.producto || "");
     setValue("cantidad", Number(item.cantidad) || 1);
     setValue("precio", Number(item.precio) || 0);
     setValue("flete", Number(item.flete) || 0);
-    
+
+    // 👉 Productos adicionales = TODOS los items restantes
+    const rest = (orden.items || []).slice(1).map((it: any) => ({
+      sku: it.sku || "",
+      producto: it.producto || "",
+      cantidad: Number(it.cantidad) || 1,
+      precio: Number(it.precio) || 0,
+      flete: Number(it.flete) || 0,
+    }));
+    setExtraItems(rest);
+
     setAbrirDialogo(true);
   };
 
   // Modifica la función guardarOrden para garantizar actualizaciones correctas
+  // Reemplaza COMPLETA tu función guardarOrden por esta
   const guardarOrden = async (data: FormValues) => {
     if (!window.confirm("¿Estás seguro de guardar los cambios?")) return;
-    
+
     setGuardando(true);
-    
+
+    // Construir SIEMPRE el array de items = [principal] + extras
+    const firstItem = {
+      sku: data.sku || "",
+      producto: data.producto || "",
+      cantidad: Number(data.cantidad) || 1,
+      precio: Number(data.precio) || 0,
+      flete: Number(data.flete) || 0,
+    };
+
+    const extras = extraItems
+      .filter(it => (String(it.sku || "").trim() || String(it.producto || "").trim()))
+      .map(it => ({
+        sku: it.sku || "",
+        producto: it.producto || "",
+        cantidad: Number(it.cantidad) || 1,
+        precio: Number(it.precio) || 0,
+        flete: Number(it.flete) || 0,
+      }));
+
+    const itemsArray = [firstItem, ...extras];
+
     try {
       if (ordenEditando?.id) {
-        console.log("Actualizando orden ID:", ordenEditando.id);
-        
-        // Simplificado: solo pasamos los datos necesarios
+        // 👉 ACTUALIZAR (enviamos TODOS los ítems)
         const payload = {
           p_canal_id: data.canal_id,
+          p_codigo_orden: data.codigo_orden || "",
+          p_estado: data.estado || "nueva orden",
           p_cliente: {
             nombre: data.cliente.nombre || "",
             documento: data.cliente.documento || "",
             ciudad: data.cliente.ciudad || "",
             departamento: data.cliente.departamento || "",
             correo: data.cliente.correo || "",
-            celular: data.cliente.celular || ""
+            celular: data.cliente.celular || "",
           },
-          p_codigo_orden: data.codigo_orden || "",
-          p_estado: data.estado || "nueva orden",
-          p_items: [
-            {
-              sku: data.sku || "",
-              producto: data.producto || "",
-              cantidad: Number(data.cantidad) || 1,
-              precio: Number(data.precio) || 0,
-              flete: Number(data.flete) || 0
-            }
-          ],
-          p_orden_id: ordenEditando.id
+          p_items: itemsArray,
+          p_orden_id: ordenEditando.id,
         };
-        
-        console.log("Actualizando con payload:", JSON.stringify(payload));
-        
+
         const result = await ordersService.actualizarOrdenCompleta(payload);
-        
-        if (result?.error) {
-          toast.error(`Error: ${result.error}`);
+
+        if (result?.error || result?.success === false) {
+          toast.error(result?.error || result?.message || "No se pudo actualizar");
         } else {
           toast.success("Orden actualizada correctamente");
-          
-          // Forzar actualización de la lista
-          setTimeout(async () => {
-            await fetchOrdenes();
-            setAbrirDialogo(false);
-            reset();
-            setOrdenEditando(null);
-          }, 500);
+          await fetchOrdenes();
+          setAbrirDialogo(false);
+          reset();
+          setExtraItems([]);
+          setOrdenEditando(null);
         }
       } else {
-        // Código para crear nueva orden...
-        const itemsArray = [
-          {
-            sku: data.sku || "",
-            producto: data.producto || "",
-            cantidad: Number(data.cantidad) || 1,
-            precio: Number(data.precio) || 0,
-            flete: Number(data.flete) || 0
-          }
-        ];
-
+        // 👉 CREAR (también con TODOS los ítems)
         const payload = {
           canal_id: data.canal_id,
           codigo_orden: data.codigo_orden || "",
           cliente: data.cliente,
-          items: itemsArray
+          items: itemsArray,
         };
 
-        console.log("Creando orden:", JSON.stringify(payload));
-        
-        // Asegúrate también de guardar el resultado aquí
         const result = await ordersService.crearOrdenCompleta(payload);
-        
+
         if (result?.error) {
-          toast.error(`Error: ${result.error}`);
+          toast.error(result.error);
         } else {
           toast.success("Orden creada correctamente");
           await fetchOrdenes();
           setAbrirDialogo(false);
           reset();
+          setExtraItems([]);
         }
       }
     } catch (err: any) {
-      console.error("Error en actualización:", err);
-      toast.error(`Error: ${err.message || "Error desconocido"}`);
+      console.error("Error en guardarOrden:", err);
+      toast.error(`Error: ${err?.message || "Error desconocido"}`);
     } finally {
       setGuardando(false);
+    }
+  };
+
+
+
+  // Añade un estado para control de actualización
+  const [updateCounter, setUpdateCounter] = useState(0);
+
+  // Mejora fetchOrdenes para forzar actualización
+  const refreshOrdenes = async () => {
+    try {
+      console.log("Forzando actualización de órdenes...");
+      // Forzar un pequeño cambio local (si deseas) y luego recargar del hook
+      setUpdateCounter(prev => prev + 1);
+      await fetchOrdenes(); // ← este es el que realmente actualiza
+    } catch (error) {
+      console.error("Error al refrescar órdenes:", error);
     }
   };
 
@@ -273,15 +304,49 @@ export default function OrdenesPage() {
 
     try {
       const result = await ordersService.eliminarOrden(id);
+
+      if (result?.error || result?.success === false) {
+        toast.error(result?.error || result?.message || "No se pudo eliminar");
+        return;
+      }
+
+      toast.success("Orden eliminada correctamente");
+      await refreshOrdenes();
+    } catch (err: any) {
+      toast.error(`Error inesperado: ${err?.message || "Error desconocido"}`);
+    }
+  };
+
+
+  // Corrige la función en OrdenesPage
+  const eliminarItem = async (itemId: string) => {
+    if (!itemId || !window.confirm("¿Estás seguro de eliminar este ítem?")) return;
+
+    try {
+      const result = await ordersService.eliminarItem(itemId);
       if (result?.error) {
         toast.error(`Error: ${result.error}`);
       } else {
-        toast.success("Orden eliminada correctamente");
-        fetchOrdenes();
+        toast.success("Ítem eliminado correctamente");
+        await refreshOrdenes(); // Usa la función mejorada
       }
     } catch (err: any) {
       toast.error(`Error inesperado: ${err?.message || "Error desconocido"}`);
     }
+  };
+
+  const addExtraItem = () => {
+    setExtraItems(prev => [...prev, { sku: "", producto: "", cantidad: 1, precio: 0, flete: 0 }]);
+  };
+
+  const updateExtraItem = (index: number, field: keyof ItemInput, value: string | number) => {
+    setExtraItems(prev =>
+      prev.map((it, i) => (i === index ? { ...it, [field]: value } : it))
+    );
+  };
+
+  const removeExtraItem = (index: number) => {
+    setExtraItems(prev => prev.filter((_, i) => i !== index));
   };
 
   const exportarExcel = async () => {
@@ -336,6 +401,7 @@ export default function OrdenesPage() {
     setAbrirDialogo(false);
     setTimeout(() => {
       setOrdenEditando(null);
+      setExtraItems([]);
       reset();
     }, 200);
   };
@@ -385,8 +451,16 @@ export default function OrdenesPage() {
                     <td className="py-2 px-4">{orden.cliente_nombre}</td>
                     <td className="py-2 px-4">
                       {orden.items.map((item, i) => (
-                        <div key={`item-${orden.id}-${i}`} className="mb-1">
-                          {item.producto} ({item.cantidad}) - ${item.precio}
+                        <div key={`item-${orden.id}-${i}`} className="mb-1 flex justify-between">
+                          <span>{item.producto} ({item.cantidad}) - ${item.precio}</span>
+                          {orden.items.length > 1 && (
+                            <button 
+                              onClick={() => item.id ? eliminarItem(item.id) : null} 
+                              className="text-red-500 hover:text-red-700 text-xs"
+                            >
+                              Eliminar
+                            </button>
+                          )}
                         </div>
                       ))}
                     </td>
@@ -653,8 +727,71 @@ export default function OrdenesPage() {
                         />
                       )}
                     />
+                    
                   </div>
                 </div>
+
+                <div className="md:col-span-2">
+                  <h3 className="font-medium text-lg mt-2">Productos adicionales</h3>
+
+                  <div className="space-y-4 mt-2">
+                    {extraItems.map((it, idx) => (
+                      <div key={idx} className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        {/* MISMA GRILLA que el bloque “Producto” */}
+                        <TextField
+                          label="SKU"
+                          variant="outlined"
+                          fullWidth
+                          value={it.sku}
+                          onChange={(e) => updateExtraItem(idx, "sku", e.target.value)}
+                        />
+                        <TextField
+                          label="Producto"
+                          variant="outlined"
+                          fullWidth
+                          value={it.producto}
+                          onChange={(e) => updateExtraItem(idx, "producto", e.target.value)}
+                        />
+                        <TextField
+                          label="Cantidad"
+                          type="number"
+                          variant="outlined"
+                          fullWidth
+                          value={it.cantidad}
+                          onChange={(e) => updateExtraItem(idx, "cantidad", e.target.value)}
+                        />
+                        <TextField
+                          label="Precio"
+                          type="number"
+                          variant="outlined"
+                          fullWidth
+                          value={it.precio}
+                          onChange={(e) => updateExtraItem(idx, "precio", e.target.value)}
+                        />
+                        <TextField
+                          label="Flete"
+                          type="number"
+                          variant="outlined"
+                          fullWidth
+                          value={it.flete}
+                          onChange={(e) => updateExtraItem(idx, "flete", e.target.value)}
+                        />
+
+                        {/* Botón alineado a la derecha ocupando toda la fila */}
+                        <div className="md:col-span-3 flex justify-end">
+                          <Button type="button" variant="destructive" onClick={() => removeExtraItem(idx)}>
+                            Quitar
+                          </Button>
+                        </div>
+                      </div>
+                    ))}
+
+                    <Button type="button" variant="outline" onClick={addExtraItem}>
+                      Agregar otro producto
+                    </Button>
+                  </div>
+                </div>
+
               </div>
             </DialogContent>
             <DialogActions>

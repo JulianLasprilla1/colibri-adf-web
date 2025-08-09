@@ -161,10 +161,3 @@ export function useOrders(refreshTrigger = 0) {
 
   return { ordenes, ordenesAgrupadas, loading, error, fetchOrdenes };
 }
-
-// ✅ Si necesitas usar el tipo Orden en otros archivos:
-// import { useOrders } from "@/hooks/useOrders";
-// import type { Orden } from "@/services/ordersService";
-
-// Ejemplo en tu hook useOrders
-const { data, error } = await supabase.from("ordenes_vista").select("*");
