@@ -5,6 +5,7 @@ import { Inter } from 'next/font/google'
 import { cn } from '@/lib/utils'
 import Providers from './providers'
 import { Toaster } from '@/components/ui/sonner' // ✅ Importar Sonner
+import LayoutWrapper from '@/components/LayoutWrapper'
 
 const inter = Inter({ subsets: ['latin'] })
 
@@ -27,10 +28,9 @@ export default function RootLayout({
         )}
       >
         <Providers>
-          {/* El div con pt-16 crea un espacio para el Navbar fijo */}
-          <div className="min-h-screen bg-gray-50 pt-16">
+          <LayoutWrapper>
             {children}
-          </div>
+          </LayoutWrapper>
           {/* ✅ Toaster configurado */}
           <Toaster
             position="bottom-right" // Esquina inferior derecha

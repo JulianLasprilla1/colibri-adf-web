@@ -220,8 +220,8 @@ export default function NuevaOrdenPage() {
         <div>
           <label htmlFor="cliente.nombre" className="block mb-1 font-medium">Nombre Cliente</label>
           <input id="cliente.nombre" {...register("cliente.nombre")} className="border rounded p-2 w-full" />
-          {errors.cliente && (errors.cliente as any).nombre?.message && (
-            <p className="text-red-500 text-sm">{String((errors.cliente as any).nombre.message)}</p>
+          {errors.cliente?.nombre?.message && (
+            <p className="text-red-500 text-sm">{String(errors.cliente.nombre.message)}</p>
           )}
         </div>
 
